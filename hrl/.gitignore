@@ -1,0 +1,2 @@
+*.logs
+.redis_auth.json
