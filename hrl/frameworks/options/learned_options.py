@@ -6,14 +6,14 @@ from scipy.misc import logsumexp
 class SigmoidTermination:
     def __init__(self, rng, nfeatures):
         self.rng = rng
-        # self.weights = np.zeros(nfeatures)
-        self.weights = np.random.rand(nfeatures)
+        self.weights = np.zeros(nfeatures)
+        # self.weights = np.random.rand(nfeatures)
     
     def pmf(self, phi):
         """ Returns probability of continuing in the current state """
         return expit(np.sum(self.weights[phi]))
-    
-    def terminate(self, phi):
+
+    def sample(self, phi):
         """ Returns a boolean to indicate whether the option should terminate in a given state """
         return self.rng.uniform() < self.pmf(phi)
     
@@ -25,8 +25,8 @@ class SigmoidTermination:
 class SoftmaxPolicy:
     def __init__(self, rng, nfeatures, nactions, temp=1e-2):
         self.rng = rng
-        # self.weights = np.zeros((nfeatures, nactions))
-        self.weights = np.random.rand(nfeatures, nactions)
+        self.weights = np.zeros((nfeatures, nactions))
+        # self.weights = np.random.rand(nfeatures, nactions)
         self.temp = temp
     
     def value(self, phi, action=None):

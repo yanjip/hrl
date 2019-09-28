@@ -4,7 +4,7 @@ import _pickle
 import sys
 import os
 import numpy as np
-
+from pathlib import Path
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -50,15 +50,18 @@ def threaded(f, daemon=False):
 
 def cache(cachedir=os.path.join(ROOT_DIR, 'cache')):
     def decorator(func):
-        def wrapper(self, *args, **kwargs):
+        def wrapper(*args, **kwargs):
             print(f'caching {func.__name__} at {cachedir}')
-            filename = f'{cachedir}/{func.__name__}_{args}.pkl' if args else f'{cachedir}/{func.__name__}.pkl'
-            if os.path.exists(filename):
-                print(f'function {func.__name__} with arguments {args} is already cached')
+            filename = f'{cachedir}/{func.__name__}_{args}_{kwargs}.pkl' if args or kwargs else f'{cachedir}/{func.__name__}.pkl'
+            filename = Path(filename)
+            if filename.exists():
+                print(
+                    f'function {func.__name__} with arguments {args} and kwargs {kwargs} is already cached')
                 with open(filename, 'rb') as f:
                     return _pickle.load(f)
-            
-            result = func(self, *args, **kwargs)
+
+            filename.parent.mkdir(parents=True, exist_ok=True)
+            result = func(*args, **kwargs)
             with open(filename, 'wb') as f:
                 _pickle.dump(result, f)
             return result

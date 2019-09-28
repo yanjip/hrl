@@ -1,91 +1,114 @@
-from gym_minigrid.minigrid import MiniGridEnv
-import numpy as np
 import random
 import time
-from hrl.utils import randargmax
-from plotly import graph_objs as go
 from typing import List
+
+import numpy as np
+from gym_minigrid.minigrid import MiniGridEnv
+
+from hrl.frameworks.options.option import Option
+from hrl.project_logger import ProjectLogger
+from hrl.utils import randargmax
 
 
 class IntraOptionModelLearning:
     
-    def __init__(self, env: MiniGridEnv, options: List):
+    def __init__(self, env: MiniGridEnv, options: List[Option],
+                 loglevel: int = 20):
         self.env = env
         self.options = options
-        self.current_option = None
-        self.last_action = None
+        self.option_names_dict = {o.name: o for o in self.options}
+        self.option_idx_dict = {name: i for i, name in
+                                enumerate(self.option_names_dict)}
+        self.logger = ProjectLogger(level=loglevel, printing=False)
+    
+    def __str__(self):
+        return 'IntraOptionModelLearning'
     
     def choose_option(self, state):
-        if self.current_option is None:
-            # Pick an option at random
-            available_options = [o for o in self.options if o.initiation_set[state] == 1]
-            self.current_option = random.choice(available_options)
-        
-        # Select action according to the policy of our current option
-        action = self.current_option.choose_action(state)
-        return action
+        """ Picks an option at random """
+        options = [o for o in self.options if o.initiation_set[state] == 1]
+        return random.choice(options)
     
-    def run_episode(self, R: np.array = None, P: np.array = None, N: np.array = None, gamma: float = 0.9,
-                    step_size: float = 1 / 4, render: bool = False):
+    def run_episode(self,
+                    R: np.ndarray = None,
+                    P: np.ndarray = None,
+                    N: np.ndarray = None,
+                    γ: float = 0.9,
+                    α: float = 1 / 4,
+                    render: bool = False):
         
-        # State is number of cells in the grid plus the direction of agent
-        # Options consist of primitive {left, right, forward} and multi-step hallway options
+        n_options = len(self.options)
+        state_space = (4, self.env.width, self.env.height)
+        dim = (n_options, *state_space)
         
         if R is None:
-            n_options = len(self.options)
-            state_space = (4, self.env.width, self.env.height)
-            dim = (n_options, *state_space)
             R = np.zeros(dim)
             N = np.zeros(dim)
             P = np.zeros((n_options, *state_space, *state_space))
         
+        rewards = np.random.normal(
+            loc=np.random.uniform(-1, 0, dim),
+            scale=0.1 + np.zeros(dim)
+        )
+        self.env.rewards = rewards
+        
         self.env.reset()
         state = (self.env.agent_dir, *reversed(self.env.agent_pos))
         done = False
+        executing_option = None
         
         while not done:
-            a = self.choose_option(state)
+    
+            if executing_option is None:
+                executing_option = self.choose_option(state)
+    
+            a = executing_option.policy(state)
             obs, reward, done, info = self.env.step(a)
+            # TODO: make the environment aware of options?
+            reward = rewards[
+                (self.option_idx_dict[executing_option.name], *state)]
+            s_next = (self.env.unwrapped.agent_dir,
+                      *reversed(self.env.unwrapped.agent_pos))
             
             if render:
-                print(f"State: {state}, Option: {self.current_option}, Action: {a}")
+                action_name = list(self.env.actions)[a].name
+                self.logger.debug(f"State: {state}, "
+                                  f"Option: {executing_option}, "
+                                  f"Action: {action_name}, "
+                                  f"Next State: {s_next}")
                 self.env.render()
                 time.sleep(0.05)
             
-            # Note: we could infer the state of the agent from obs, but get it directly instead
-            state_next = (self.env.agent_dir, *reversed(self.env.agent_pos))
-            
             # Update model for every option consistent with last action taken
             for option in self.options:
-                print('check', option.name)
-                if option.choose_action(state) != a:
+                if option.policy(state) != a:
                     continue
-                
-                o = self.options.index(option)
+    
+                o = self.option_idx_dict[executing_option.name]
                 option_state = (o, *state)
                 
                 # Update visitation counter
-                if step_size is None:
+                if α is None:
                     N[option_state] += 1
                     alpha = 1 / N[option_state]
                 else:
-                    alpha = step_size
+                    alpha = α
                 
                 # Update reward matrix
-                target = reward + gamma * (1 - option.termination_set[state_next]) * R[(o, *state_next)]
+                β = option.termination_function(s_next)
+                target = reward + γ * (1 - β) * R[(o, *s_next)]
                 R[option_state] += alpha * (target - R[option_state])
                 
                 # Update probability transition matrix
-                
-                target = gamma * (1 - option.termination_set[state_next]) * P[o, :, :, :, state_next[0], state_next[1],
-                                                                            state_next[2]]
+                target = γ * (1 - β) * P[o, :, :, :, s_next[0], s_next[1],
+                                       s_next[2]]
                 P[option_state] += alpha * (target - P[option_state])
-                P[(o, *state, *state_next)] += alpha * gamma * option.termination_set[state_next]
-            
-            if self.current_option.termination_set[state_next] == 1:
-                self.current_option = None
-            
-            state = state_next
+                P[(o, *state, *s_next)] += alpha * γ * β
+    
+            if executing_option.termination_function(s_next) == 1:
+                executing_option = None
+    
+            state = s_next
         
         return N, R, P
 
@@ -115,7 +138,8 @@ class IntraOptionValueLearning:
         """ filters options according to availability and picks one greedily"""
         
         all_options = q_values[:, state[0], state[1], state[2]]
-        available_options = [i for i, o in enumerate(self.options) if o.initiation_set[state] == 1]
+        available_options = [i for i, o in enumerate(self.options) if
+                             o.initiation_set[state] == 1]
         # print('Available options:', [self.options[o].name for o in available_options])
         
         # Get max across all available options
@@ -126,14 +150,16 @@ class IntraOptionValueLearning:
         optimal_option = random.choice(list(valid))
         
         # print('Best option:', self.options[optimal_option].name)
-        suboptimal_options = [self.options[i] for i in available_options if i != optimal_option]
+        suboptimal_options = [self.options[i] for i in available_options if
+                              i != optimal_option]
         return optimal_option, suboptimal_options
     
     def _choose_optimal_option(self, q_values, state):
         """ filters options according to availability and picks one greedily"""
         
         all_options = q_values[:, state[0], state[1], state[2]]
-        available_options = [i for i, o in enumerate(self.options) if o.initiation_set[state] == 1]
+        available_options = [i for i, o in enumerate(self.options) if
+                             o.initiation_set[state] == 1]
         # print('Available options:', [self.options[o].name for o in available_options])
         
         # Get max across all available options
@@ -141,19 +167,22 @@ class IntraOptionValueLearning:
         
         # Pick at random from the best available options
         valid = set(available_options) & set(np.where(all_options == max_q)[0])
-        if self.current_option and q_values[(self.options.index(self.current_option), *state)] == max_q:
+        if self.current_option and q_values[
+            (self.options.index(self.current_option), *state)] == max_q:
             optimal_option = self.options.index(self.current_option)
         else:
             optimal_option = random.choice(list(valid))
         
         # print('Best option:', self.options[optimal_option].name)
-        suboptimal_options = [self.options[i] for i in available_options if i != optimal_option]
+        suboptimal_options = [self.options[i] for i in available_options if
+                              i != optimal_option]
         return optimal_option, suboptimal_options
     
     def choose_option_(self, q_values, state, epsilon=0.1):
         if self.current_option is None:
             # Pick the optimal option with probability 1 - epsilon
-            optimal_option, suboptimal_options = self._choose_optimal_option(q_values, state)
+            optimal_option, suboptimal_options = self._choose_optimal_option(
+                q_values, state)
             if random.random() > epsilon:
                 self.current_option = self.options[optimal_option]
             else:
@@ -165,7 +194,8 @@ class IntraOptionValueLearning:
     
     def choose_option(self, q_values, state, epsilon=0.1):
         # Pick the optimal option with probability 1 - epsilon
-        optimal_option, suboptimal_options = self._choose_optimal_option(q_values, state)
+        optimal_option, suboptimal_options = self._choose_optimal_option(
+            q_values, state)
         if random.random() > epsilon:
             self.current_option = self.options[optimal_option]
         else:
@@ -176,7 +206,8 @@ class IntraOptionValueLearning:
         return action
     
     def q_learning(self, q_values: np.array = None,
-                   epsilon: float = 0.1, alpha: float = 1 / 4, gamma: float = 0.9, render: bool = False):
+                   epsilon: float = 0.1, alpha: float = 1 / 4,
+                   γ: float = 0.9, render: bool = False):
         
         # State is number of cells in the grid plus the direction of agent
         # Options consist of primitive {left, right, forward} and multi-step hallway options
@@ -198,7 +229,8 @@ class IntraOptionValueLearning:
             
             # Note: we could infer the state of the agent from obs, but get it directly instead
             state_next = (self.env.agent_dir, *reversed(self.env.agent_pos))
-            o_next = randargmax(q_values[:, state_next[0], state_next[1], state_next[2]])
+            o_next = randargmax(
+                q_values[:, state_next[0], state_next[1], state_next[2]])
             
             # Update action-values for every option consistent with last action taken
             for option in self.options:
@@ -211,13 +243,16 @@ class IntraOptionValueLearning:
                 
                 option_index = self.options.index(option)
                 option_state = (option_index, *state)
-                
-                continuation_value = (1 - option.termination_set[state_next]) * q_values[(option_index, *state_next)]
-                termination_value = option.termination_set[state_next] * q_values[(o_next, *state_next)]
+
+                continuation_value = (1 - option.termination_set[state_next]) *\
+                                     q_values[(option_index, *state_next)]
+                termination_value = option.termination_set[state_next] *\
+                                    q_values[(o_next, *state_next)]
                 U = continuation_value + termination_value
-                
-                target = reward + gamma * U
-                q_values[option_state] += alpha * (target - q_values[option_state])
+
+                target = reward + γ * U
+                q_values[option_state] += alpha * (
+                    target - q_values[option_state])
             
             # Terminate the option
             if self.current_option.termination_set[state_next] == 1 or done:

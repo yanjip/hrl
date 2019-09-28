@@ -1,25 +1,15 @@
-import gym
 import argparse
 import numpy as np
-from hrl.envs.FourRooms import FourRooms
+from hrl.envs.four_rooms import FourRooms
 import pickle
 import redis
 import random
 from functools import partial
 
-# from gym.envs.registration import register
-# register(
-#     id='Fourrooms-v0',
-#     entry_point='four_rooms:Fourrooms',
-#     max_episode_steps=100000,
-#     reward_threshold=1,
-# )
-db = redis.StrictRedis(port=6379)
-
 from scipy.special import expit
 from scipy.misc import logsumexp
 import dill
-
+from hrl.utils import randargmax
 
 class Tabular:
     def __init__(self, nstates):
@@ -46,7 +36,7 @@ class EgreedyPolicy:
     def sample(self, phi):
         if self.rng.uniform() < self.epsilon:
             return int(self.rng.randint(self.weights.shape[1]))
-        return int(np.argmax(self.value(phi)))
+        return randargmax(self.value(phi))
 
 
 class SoftmaxPolicy:
@@ -301,6 +291,8 @@ if __name__ == '__main__':
     env = FourRooms(agent_pos=(1, 1), goal_pos=(15, 15))
     env.max_steps = 1000000
     env.step = partial(stochastic_step, env)
+
+    db = redis.StrictRedis(port=6379)
     
     
     def get_state():
@@ -398,6 +390,7 @@ if __name__ == '__main__':
                 
                 # Termination might occur upon entering the new state
                 if option_terminations[option].sample(phi):
+                    # print(f'Option: {option}, PMF: {option_terminations[option].pmf(phi)}')
                     option = policy.sample(phi)
                     option_switches += 1
                     avgduration += (1. / option_switches) * (duration - avgduration)
@@ -423,11 +416,12 @@ if __name__ == '__main__':
                 duration += 1
                 if done:
                     break
-            
+
             history[run, episode, 0] = step
             history[run, episode, 1] = avgduration
             print(f'Run {run} episode {episode} steps {step} cumreward {cumreward} avg. duration {avgduration} '
                   f'switches {option_switches} \n')
+
         #     dim = (4, 19, 19)
         #     Q = np.zeros((*dim, args.noptions))
         #     Qu = np.zeros((*dim, args.noptions, nactions))

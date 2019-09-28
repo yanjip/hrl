@@ -9,8 +9,13 @@ from hrl.frameworks.options.learned_options import LearnedOption
 
 class OptionCritic:
     
-    def __init__(self, env: MiniGridEnv, options: List[LearnedOption], gamma: float = 0.99, alpha_critic: float = 0.5,
-                 alpha_theta: float = 0.25, alpha_upsilon: float = 0.25):
+    def __init__(self,
+                 env: MiniGridEnv,
+                 options: List[LearnedOption],
+                 gamma: float = 0.99,
+                 alpha_critic: float = 0.5,
+                 alpha_theta: float = 0.25,
+                 alpha_upsilon: float = 0.25):
         
         # Environment setup
         self.env = env
@@ -65,22 +70,16 @@ class OptionCritic:
         termination_value = beta * np.max(self.Q[state_next])
         target = reward + self.gamma * (continuation_value + termination_value)
         self.Q[state, o] += self.alpha_critic * (target - self.Q[state, o])
+        # Note: alternatively use
+        #  phi = np.array([state, ])
+        #  probs = self.last_option.policy.pmf(phi)
+        #  self.Q[state, o] = probs.dot(self.Q_U[state, o])
         
         # Update Q_u via Intra-Option-Action Q-Learning
         self.Q_U[state, o, a] += self.alpha_critic * (target - self.Q_U[state, o, a])
         
         # Update state-value function V
         self.V[state] = np.max(self.Q[state, o])
-        
-        # if target != 0:
-        #     print(f'Q target {target}')
-        #     print(state, ' ', a, ' --> ', reward, ' ', state_next)
-        #     print(self.get_state())
-        
-        # # Update option-value function Q_omega via Intra-Option Q-learning
-        # phi = np.array([state, ])
-        # probs = self.last_option.policy.pmf(phi)
-        # self.Q[state, o] = probs.dot(self.Q_U[state, o])
     
     def actor_update(self, option, action, state_next, baseline=True):
         """ Learns an option-specific policy and termination function via policy gradients """
@@ -115,7 +114,7 @@ class OptionCritic:
         
         # Trackers
         cumreward = 0.
-        duration = 0
+        duration = 1
         option_switches = 0
         avgduration = 0.
         steps = 0
@@ -132,12 +131,13 @@ class OptionCritic:
             phi = np.array([state_next, ])
             
             # Choose another option in case the current one terminates
-            if option.beta.terminate(phi):
+            if option.beta.sample(phi):
+                # print(f'Option: {self.options.index(option)}, PMF: {option.beta.pmf(phi)}')
                 self.last_option = option
                 option = self.choose_option(state_next)
                 option_switches += 1
                 avgduration += (1. / option_switches) * (duration - avgduration)
-                duration = 0
+                duration = 1
             
             # Choose next action according to the intra-option policy of the current option
             action = self.choose_action(option, phi)
@@ -164,3 +164,7 @@ class OptionCritic:
         i *= 19
         i += state[2]
         return i
+
+
+class OptionCriticNetwork:
+    pass

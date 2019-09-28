@@ -9,7 +9,7 @@ from functools import partial
 from hrl.utils import ROOT_DIR
 from hrl.frameworks.options.OptionCritic import OptionCritic
 from hrl.frameworks.options.learned_options import LearnedOption
-from hrl.envs.FourRooms import FourRooms, stochastic_step
+from hrl.envs.four_rooms import FourRooms, stochastic_step
 
 
 class LearningRateScheduler:
@@ -34,7 +34,7 @@ if __name__ == '__main__':
     # Create environment
     env = FourRooms(agent_pos=(1, 1), goal_pos=(15, 15))
     env.max_steps = 1000000
-    env.step = partial(stochastic_step, env)
+    env.step = partial(stochastic_step, env, attractor=(15, 15))
     
     # Create options
     n_options = 4

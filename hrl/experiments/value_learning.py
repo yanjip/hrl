@@ -4,11 +4,11 @@ from tqdm import tqdm
 from functools import partial
 
 from hrl.frameworks.options.SMDP import SMDPValueLearning
-from hrl.frameworks.options.IntraOption import IntraOptionValueLearning
+from hrl.frameworks.options.intra_option import IntraOptionValueLearning
 from hrl.utils import ROOT_DIR
 
-from hrl.envs.FourRooms import FourRooms, stochastic_step
-from hrl.frameworks.options.hallway_options import HallwayOption
+from hrl.envs.four_rooms import FourRooms, stochastic_step
+from hrl.frameworks.options.hard_coded_options import HallwayOption
 
 
 def create_agent(mode='primitive + options'):
