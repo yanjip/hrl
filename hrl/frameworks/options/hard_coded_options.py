@@ -6,7 +6,7 @@ from enum import IntEnum
 
 import gym
 import numpy as np
-from gym_minigrid.minigrid import Wall, Goal
+from gym_minigrid.minigrid import Floor, Goal
 from tqdm import tqdm
 
 from hrl.frameworks.options.option import Option
@@ -18,9 +18,9 @@ class Actions(IntEnum):
     left = 0
     right = 1
     forward = 2
-    
-    # Done completing task
-    done = 3
+
+    # # Done completing task
+    # done = 3
 
 
 class PrimitiveOption(Option):
@@ -35,8 +35,8 @@ class PrimitiveOption(Option):
         termination_set = np.ones(state_space_dim)
         π = np.zeros(state_space_dim) + getattr(Actions, name)
         super().__init__(initiation_set=initiation_set,
-                         termination_function=lambda s: termination_set[s],
-                         policy=lambda s: int(π[s]),
+                         termination_set=termination_set,
+                         policy=π,
                          name=name)
 
 
@@ -72,15 +72,15 @@ class HallwayOption(Option):
         cached_options_dir = f'{ROOT_DIR}/cache/given_options_4rooms'
         if os.path.exists(f'{cached_options_dir}/{name}.pkl'):
             with open(f'{cached_options_dir}/{name}.pkl', 'rb') as f:
-                initiation_set, termination_set, policy = pickle.load(f)
+                initiation_set, termination_set, π = pickle.load(f)
         else:
-            initiation_set, termination_set, policy = self._create_option()
+            initiation_set, termination_set, π = self._create_option()
             with open(f'{cached_options_dir}/{name}.pkl', 'wb') as f:
-                pickle.dump((initiation_set, termination_set, policy), f)
+                pickle.dump((initiation_set, termination_set, π), f)
         
         super().__init__(initiation_set=initiation_set,
-                         termination_function=lambda s: termination_set[s],
-                         policy=lambda s: int(policy[s]),
+                         termination_set=termination_set,
+                         policy=π,
                          name=name)
     
     def __str__(self):
@@ -107,15 +107,18 @@ class HallwayOption(Option):
         }
         goal, other_hall = hallways[self.option_name]
         self.env.grid.set(*goal, Goal())
-        self.env.grid.set(*other_hall, Wall())
-    
-    def _greedify(self, action, epsilon: float = 0.1):
+        self.env.grid.set(*other_hall, Floor())
+
+    def _epsilon_greedy(self, action, epsilon: float = 0.1):
         if random.random() < epsilon:
-            action = random.randint(0, len(self.primitive_options) - 1)
+            action = random.randint(0, len(self.env.actions) - 1)
         return action
-    
-    def _q_learning(self, q_values: np.array = None, epsilon: float = 0.1,
-                    alpha: float = 0.1, gamma: float = 0.9):
+
+    def _q_learning(self,
+                    q_values: np.array = None,
+                    epsilon: float = 0.1,
+                    alpha: float = 0.1,
+                    gamma: float = 0.9):
         """ learns the optimal policy to get to the hallway from anywhere within a room """
         
         # State is number of cells in the grid plus the direction of agent
@@ -131,7 +134,7 @@ class HallwayOption(Option):
             # time.sleep(0.0005)
             
             a = randargmax(q_values[:, state[0], state[1], state[2]])
-            a = self._greedify(a, epsilon)
+            a = self._epsilon_greedy(a, epsilon)
             obs, reward, done, info = self.env.step(a)
             
             # Note: we could infer the state of the agent from obs, but get it directly instead

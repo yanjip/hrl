@@ -1,9 +1,9 @@
 import random
+from enum import IntEnum
 
 from gym import spaces
 from gym_minigrid.envs.fourrooms import FourRoomsEnv
 from gym_minigrid.minigrid import Grid, Goal
-from enum import IntEnum
 
 
 def stochastic_step(env, action, prob=0.9):
@@ -80,6 +80,9 @@ class FourRooms(FourRoomsEnv):
     
     def __init__(self, agent_pos: tuple = (1, 1), goal_pos: tuple = (15, 15)):
         super().__init__(agent_pos=agent_pos, goal_pos=goal_pos)
+
+    def _reward(self):
+        return 1
     
     def _gen_grid(self, width, height):
         
@@ -128,10 +131,9 @@ class FourRooms(FourRoomsEnv):
         
         # Randomize the player start position and orientation
         if self._agent_default_pos is not None:
-            self.start_pos = self._agent_default_pos
+            self.agent_pos = self._agent_default_pos
             self.grid.set(*self._agent_default_pos, None)
-            self.start_dir = self._rand_int(0,
-                                            4)  # assuming random start direction
+            self.agent_dir = self._rand_int(0, 4)
         else:
             self.place_agent()
         
