@@ -4,7 +4,7 @@ from gym_minigrid.wrappers import FullyObsWrapper
 
 from hrl.envs.four_rooms import FourRooms
 from hrl.experiments import EXPERIMENT_DIR
-from hrl.frameworks.options.SMDP import SMDPModelLearning, SMDPPlanning
+from hrl.learning_algorithms.SMDP import SMDPModelLearning, SMDPPlanning
 from hrl.frameworks.options.hard_coded_options import HallwayOption, PrimitiveOption
 from hrl.project_logger import ProjectLogger
 from hrl.utils import cache

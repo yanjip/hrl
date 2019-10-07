@@ -6,7 +6,7 @@ from enum import IntEnum
 
 import gym
 import numpy as np
-from gym_minigrid.minigrid import Floor, Goal
+from gym_minigrid.minigrid import Wall, Goal
 from tqdm import tqdm
 
 from hrl.frameworks.options.option import Option
@@ -19,16 +19,12 @@ class Actions(IntEnum):
     right = 1
     forward = 2
 
-    # # Done completing task
-    # done = 3
-
 
 class PrimitiveOption(Option):
     """ Primitive options are defined everywhere and can terminate anywhere """
     primitive_options = {'left', 'right', 'forward'}
     
-    def __init__(self, name: str, state_space_dim: tuple):
-        # FIXME(Vlad)
+    def __init__(self, name: str):
         state_space_dim = (4, 19, 19)
         
         initiation_set = np.ones(state_space_dim)
@@ -55,12 +51,10 @@ class HallwayOption(Option):
         'botright->topright'
     }
     
-    def __init__(self, name: str, state_space_dim: tuple):
+    def __init__(self, name: str):
         assert name in self.hallway_options
         self.option_name = name
-        self.state_space_dim = state_space_dim
-        
-        assert self.state_space_dim == (3, 19, 19)
+        self.state_space_dim = (4, 19, 19)
         
         # Instantiate a sub-room in which the option operates
         self.env = gym.make('MiniGrid-Empty-10x10-v0')
@@ -88,8 +82,8 @@ class HallwayOption(Option):
     
     def reset(self):
         self.env.reset()
-        self._make_hallways()
         self.env.grid.set(8, 8, None)  # Replace default goal by a generic tile
+        self._make_hallways()
     
     def _make_hallways(self):
         """ Creates a sub-room with two hallways and defines one of them
@@ -107,7 +101,7 @@ class HallwayOption(Option):
         }
         goal, other_hall = hallways[self.option_name]
         self.env.grid.set(*goal, Goal())
-        self.env.grid.set(*other_hall, Floor())
+        self.env.grid.set(*other_hall, Wall())
 
     def _epsilon_greedy(self, action, epsilon: float = 0.1):
         if random.random() < epsilon:

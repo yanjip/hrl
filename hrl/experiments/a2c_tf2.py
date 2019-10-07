@@ -3,11 +3,11 @@ import tensorflow as tf
 import tensorflow.keras.layers as kl
 import tensorflow.keras.losses as kls
 import tensorflow.keras.optimizers as ko
-
-from functools import partial
-from hrl.envs.four_rooms import FourRoomsSB, stochastic_step
-
+from gym_minigrid.wrappers import FullyObsWrapper
 from tqdm import tqdm
+
+from hrl.envs.four_rooms import FourRooms
+from hrl.envs.wrappers import SimplifyObsSpace, SimplifyActionSpace
 
 
 class ProbabilityDistribution(tf.keras.Model):
@@ -20,8 +20,8 @@ class Model(tf.keras.Model):
     def __init__(self, num_actions):
         super().__init__('mlp_policy')
         # no tf.get_variable(), just simple Keras API
-        self.hidden1 = kl.Dense(128, activation='relu')
-        self.hidden2 = kl.Dense(128, activation='relu')
+        self.actor = kl.Dense(128, activation='relu')
+        self.critic = kl.Dense(128, activation='relu')
         self.value = kl.Dense(1, name='value')
         # logits are unnormalized log probabilities
         self.logits = kl.Dense(num_actions, name='policy_logits')
@@ -31,8 +31,8 @@ class Model(tf.keras.Model):
         # inputs is a numpy array, convert to Tensor
         x = tf.convert_to_tensor(inputs, dtype=tf.float32)
         # separate hidden layers from the same input tensor
-        hidden_logs = self.hidden1(x)
-        hidden_vals = self.hidden2(x)
+        hidden_logs = self.actor(x)
+        hidden_vals = self.critic(x)
         return self.logits(hidden_logs), self.value(hidden_vals)
     
     def action_value(self, obs):
@@ -101,22 +101,24 @@ class A2CAgent:
             _, next_value = self.model.action_value(next_obs[None, :])
             returns, advs = self._returns_advantages(rewards, dones, values,
                                                      next_value)
-            # a trick to input actions and advantages through same API
-            acts_and_advs = np.concatenate([actions[:, None], advs[:, None]],
-                                           axis=-1)
-            # performs a full training step on the collected batch
-            # note: no need to mess around with gradients, Keras API handles it
-            losses = self.model.train_on_batch(observations,
-                                               [acts_and_advs, returns])
+            # A trick to input actions and advantages through same API
+            acts_and_advs = np.stack((actions, advs)).T
+            # Performs a full training step on the collected batch
+            losses = self.model.train_on_batch(
+                x=observations,
+                y=[acts_and_advs, returns]
+            )
+            print(losses)
+        
         return ep_rews
     
     def _returns_advantages(self, rewards, dones, values, next_value):
-        # next_value is the bootstrap value estimate of a future state (the critic)
+        # Last value is the bootstrap value estimate of future states
         returns = np.append(np.zeros_like(rewards), next_value, axis=-1)
-        # returns are calculated as discounted sum of future rewards
+        # Returns are calculated as discounted sum of future rewards
         for t in reversed(range(rewards.shape[0])):
-            returns[t] = rewards[t] + self.params['gamma'] * returns[t + 1] * (
-                    1 - dones[t])
+            returns[t] = rewards[t] + self.params['gamma'] * returns[t + 1] *\
+                         (1 - dones[t])
         returns = returns[:-1]
         # advantages are returns - baseline, value estimates in our case
         advantages = returns - values
@@ -146,12 +148,8 @@ class A2CAgent:
 
 if __name__ == '__main__':
     # Create environment
-    env = FourRoomsSB(agent_pos=(1, 1), goal_pos=(15, 15))
+    env = SimplifyActionSpace(SimplifyObsSpace(FullyObsWrapper(FourRooms())))
     env.max_steps = 1000000
-    env.step = partial(stochastic_step, env)
-    
-    # import gym
-    # env = gym.make('CartPole-v0')
     
     # Create model
     model = Model(num_actions=env.action_space.n)

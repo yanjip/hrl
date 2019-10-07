@@ -1,7 +1,6 @@
 import pickle
 from typing import List
 
-import gym
 import numpy as np
 import ray
 from gym_minigrid.wrappers import FullyObsWrapper
@@ -10,9 +9,10 @@ import plotly
 from tqdm import tqdm
 
 from hrl.envs.four_rooms import FourRooms
-from hrl.frameworks.options.SMDP import SMDPModelLearning
+from hrl.envs.wrappers import RandomRewards
+from hrl.learning_algorithms.SMDP import SMDPModelLearning
 from hrl.frameworks.options.hard_coded_options import HallwayOption, PrimitiveOption
-from hrl.frameworks.options.intra_option import IntraOptionModelLearning
+from hrl.learning_algorithms.intra_option import IntraOptionModelLearning
 from hrl.utils import ROOT_DIR, cache
 
 RewardModel = DynamicsModel = np.ndarray
@@ -116,36 +116,6 @@ def compute_reward_error(options, true_R, R):
     return error
 
 
-class RandomRewards(gym.core.Wrapper):
-    """ In this experiment, the rewards were selected according to
-    normal probability distribution with a standard deviation of 0.1
-    and a mean that was different for each state-action pair.
-    The means were selected randomly at the beginning of each run uniformly
-    from the [−1; 0] interval.
-    """
-    
-    def __init__(self, env):
-        super().__init__(env)
-        self.rewards = None
-        self.reset()
-    
-    def step(self, action):
-        obs, reward, done, info = self.env.step(action)
-
-        env = self.unwrapped
-        ix = (action, env.agent_dir, *reversed(env.agent_pos))
-        reward = self.rewards[ix]
-        
-        return obs, reward, done, info
-    
-    def reset(self, **kwargs):
-        dim = (3, 4, 19, 19)
-        # self.rewards = -1 * np.ones(shape=dim)
-        self.rewards = np.random.normal(
-            loc=np.random.uniform(-1, 0, dim),
-            scale=0.1 + np.zeros(dim)
-        )
-        return self.env.reset(**kwargs)
 
 
 if __name__ == "__main__":

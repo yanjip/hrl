@@ -4,7 +4,88 @@ import time
 from gym_minigrid.minigrid import MiniGridEnv
 from hrl.utils import randargmax
 from typing import List
-from hrl.frameworks.options.learned_options import LearnedOption
+
+import numpy as np
+from scipy.special import expit, logsumexp
+
+
+class SigmoidTermination:
+    def __init__(self, rng, nfeatures):
+        self.rng = rng
+        self.weights = np.zeros(nfeatures)
+        # self.weights = np.random.rand(nfeatures)
+    
+    def pmf(self, phi):
+        """ Returns probability of continuing in the current state """
+        return expit(np.sum(self.weights[phi]))
+    
+    def sample(self, phi):
+        """ Returns a boolean to indicate whether the option should terminate in a given state """
+        return self.rng.uniform() < self.pmf(phi)
+    
+    def grad(self, phi):
+        terminate = self.pmf(phi)
+        return terminate * (1. - terminate)
+
+
+class SoftmaxPolicy:
+    def __init__(self, rng, nfeatures, nactions, temp=1e-2):
+        self.rng = rng
+        self.weights = np.zeros((nfeatures, nactions))
+        # self.weights = np.random.rand(nfeatures, nactions)
+        self.temp = temp
+    
+    def value(self, phi, action=None):
+        """ Returns a vector of action values for the current state """
+        if action is None:
+            return np.sum(self.weights[phi, :], axis=0)
+        return np.sum(self.weights[phi, action], axis=0)
+    
+    def pmf(self, phi):
+        """ Returns a vector of probabilities over actions in the current state """
+        v = self.value(phi) / self.temp
+        return np.exp(v - logsumexp(v))
+    
+    def sample(self, phi):
+        """ Samples an action wrt the current weights """
+        return int(self.rng.choice(self.weights.shape[1], p=self.pmf(phi)))
+
+
+class OneStepTermination:
+    def sample(self, phi):
+        return 1
+    
+    def pmf(self, phi):
+        return 1.
+
+
+class FixedActionPolicies:
+    def __init__(self, action, nactions):
+        self.action = action
+        self.probs = np.eye(nactions)[action]
+    
+    def sample(self, phi):
+        return self.action
+    
+    def pmf(self, phi):
+        return self.probs
+
+
+class FixedOption:
+    def __init__(self, action, n_actions):
+        self.policy = FixedActionPolicies(action, n_actions)
+        self.beta = OneStepTermination()
+
+
+class LearnedOption:
+    
+    def __init__(self, n_features, n_actions, rng=np.random.RandomState(1337)):
+        self.n_states = n_features
+        self.n_actions = n_actions
+        
+        # Each option has its own policy and termination functions learned via policy gradients
+        self.policy = SoftmaxPolicy(rng, n_features, n_actions)
+        self.beta = SigmoidTermination(rng, n_features)
 
 
 class OptionCritic:
@@ -76,7 +157,8 @@ class OptionCritic:
         #  self.Q[state, o] = probs.dot(self.Q_U[state, o])
         
         # Update Q_u via Intra-Option-Action Q-Learning
-        self.Q_U[state, o, a] += self.alpha_critic * (target - self.Q_U[state, o, a])
+        self.Q_U[state, o, a] += self.alpha_critic * (
+                target - self.Q_U[state, o, a])
         
         # Update state-value function V
         self.V[state] = np.max(self.Q[state, o])
@@ -143,8 +225,11 @@ class OptionCritic:
             action = self.choose_action(option, phi)
             
             # Evaluate and improve options
+            
             self.critic_update(state, reward, state_next)
-            self.actor_update(option, action, state_next)
+            
+            if isinstance(option, LearnedOption):
+                self.actor_update(option, action, state_next)
             
             # Update trackers
             self.last_action = action
@@ -152,7 +237,9 @@ class OptionCritic:
             state = state_next
             cumreward += reward
             duration += 1
-        
+
+        np.set_printoptions(precision=3, suppress=True, linewidth=150)
+        print(np.mean(self.Q.reshape((4, 19, 19, len(self.options))), axis=(0,3 )))
         print(f'steps {steps} cumreward {round(cumreward, 2)} '
               f'avg. duration {round(avgduration, 2)} switches {option_switches}')
     

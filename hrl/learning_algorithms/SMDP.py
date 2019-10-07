@@ -8,6 +8,7 @@ from plotly import graph_objs as go
 from tqdm import tqdm
 
 from hrl.frameworks.options.option import Option, MarkovOption
+from hrl.frameworks.options.policies import PolicyOverOptions
 from hrl.project_logger import ProjectLogger
 from hrl.utils import randargmax
 
@@ -30,57 +31,24 @@ class SMDPValueLearning:
     def __init__(self,
                  env: MiniGridEnv,
                  options: Options,
+                 policy: PolicyOverOptions,
                  loglevel: int = 20):
         self.env = env
         self.options = options
         self.option_names_dict = {o.name: o for o in self.options}
         self.option_idx_dict = {name: i for i, name in
                                 enumerate(self.option_names_dict)}
+        
+        self._policy = policy
         self.logger = ProjectLogger(level=loglevel, printing=False)
     
-    def _epsilon_greedy(self,
-                        Q: np.ndarray,
-                        state: tuple,
-                        ε: float = 0.1
-                        ) -> Option:
-        """ Picks the optimal option with probability 1 - ε """
-        
-        # Filter options based on their initiation set
-        options = list(filter(lambda o: o[1].initiation_set[state] == 1,
-                              enumerate(self.options)))
-        option_indices = [i for i, o in options]
-        self.logger.debug(f'Available options: {[str(o) for i, o in options]}')
-        
-        # Get an option with max Q
-        all_options = Q[(slice(None), *state)]
-        max_q = all_options[option_indices].max()
-        
-        # Pick at random from the best available options
-        valid = set(option_indices) & set(np.where(all_options == max_q)[0])
-        optimal_option = self.options[random.choice(list(valid))]
-        self.logger.debug(f'Best option: {optimal_option}')
-        
-        # Add randomness to the choice
-        if random.random() > ε:
-            return optimal_option
-        else:
-            return random.choice([self.options[i] for i, o in options])
-    
-    def choose_option(self,
-                      Q: np.ndarray,
-                      state: tuple,
-                      policy: str = 'epsilon_greedy',
-                      ε: float = 0.1) -> MarkovOption:
-        if policy == 'epsilon_greedy':
-            option = self._epsilon_greedy(Q, state, ε)
-        else:
-            raise ValueError(f'Policy {policy} is not implemented')
-    
+    def policy(self, state, *args, **kwargs):
+        option = self._policy(state, *args, **kwargs)
         return MarkovOption(
             starting_state=state,
             initiation_set=option.initiation_set,
-            termination_set=option._termination_set,
-            policy=option._policy,
+            termination_function=option.termination,
+            policy=option.target_policy,
             name=str(option)
         )
     
@@ -89,7 +57,6 @@ class SMDPValueLearning:
                    γ: float = 0.9,
                    Q: np.ndarray = None,
                    N: np.ndarray = None,
-                   ε: float = 0.1,
                    α: float = None,
                    render: bool = False):
         
@@ -106,7 +73,7 @@ class SMDPValueLearning:
             
             self.env.reset()
             state = (env.agent_dir, *reversed(env.agent_pos))
-            executing_option = self.choose_option(Q, state, ε=ε)
+            executing_option = self.policy(Q, state)
             done = False
             
             while not done:
@@ -151,7 +118,7 @@ class SMDPValueLearning:
                     Q[start_state] += alpha * (target - Q[start_state])
                     
                     # Choose the next option
-                    executing_option = self.choose_option(Q, s_next, ε=ε)
+                    executing_option = self.policy(Q, s_next)
                 
                 # Reset the state
                 state = s_next
@@ -186,7 +153,7 @@ class SMDPValueLearning:
 
 class SMDPModelLearning:
     """ Model learning in Semi-Markov Decision Process via MC sampling """
-
+    
     def __init__(self,
                  env: MiniGridEnv,
                  options: Options,
@@ -197,7 +164,7 @@ class SMDPModelLearning:
         self.option_idx_dict = {name: i for i, name in
                                 enumerate(self.option_names_dict)}
         self.logger = ProjectLogger(level=loglevel, printing=True)
-
+    
     def __str__(self):
         return 'SMDPModelLearning'
     
@@ -212,14 +179,14 @@ class SMDPModelLearning:
             policy=option.policy,
             name=str(option)
         )
-
+    
     def run_episode(self,
                     N: np.ndarray = None,
                     R: np.ndarray = None,
                     P: np.ndarray = None,
                     γ: float = 0.9,
                     render: bool = False):
-    
+        
         env = self.env.unwrapped
         n_options = len(self.options)
         state_space_dim = (4, env.width, env.height)
@@ -234,12 +201,12 @@ class SMDPModelLearning:
         state = (self.env.agent_dir, *reversed(env.agent_pos))
         done = False
         executing_option = None
-    
-        while not done:
         
+        while not done:
+            
             if executing_option is None:
                 executing_option = self.choose_option(state)
-        
+            
             a = executing_option.policy(state)
             obs, reward, done, info = self.env.step(a)
             state_next = (env.agent_dir, *reversed(env.agent_pos))
@@ -252,7 +219,7 @@ class SMDPModelLearning:
                                   f"Next State: {state_next}")
                 self.env.render()
                 time.sleep(0.05)
-        
+            
             executing_option.k += 1
             executing_option.cumulant += γ ** executing_option.k * reward
             
@@ -271,35 +238,35 @@ class SMDPModelLearning:
                 # Update probability transition matrix
                 P[(*option_state, *state_next)] += α * (γ ** executing_option.k)
                 P[option_state] -= α * P[option_state]
-
+                
                 executing_option = None
             
             state = state_next
             yield N, R, P
         
         return N, R, P
-
+    
     def get_true_models(self, seed: int = 1337, γ: float = 0.9):
         """ Learn true dynamics (P) and reward (R) models by unrolling each
         option for each state in its initiation set until termination
         # TODO: need to call multiple times if the environment is stochastic?
         """
-
+        
         np.random.seed(seed)
-
+        
         n_options = len(self.options)
         state_space_dim = (4, self.env.width, self.env.height)
         dim = (n_options, *state_space_dim)
-
+        
         R = np.zeros(dim)
         N = np.zeros(dim)
         P = np.zeros((n_options, *state_space_dim, *state_space_dim))
-
+        
         self.env.reset()
-
+        
         for option_i, option in tqdm(enumerate(self.options)):
             for state, active in np.ndenumerate(option.initiation_set):
-        
+                
                 # Checks if the state is in initiation set
                 if not active:
                     continue
@@ -308,11 +275,11 @@ class SMDPModelLearning:
                 env.agent_dir, env.agent_pos = state[0], tuple(
                     reversed(state[1:]))
                 cell = self.env.grid.get(*env.agent_pos)
-        
+                
                 # Check if the state is valid for the agent to be in
                 if not (cell is None or cell.can_overlap()):
                     continue
-        
+                
                 # Activate an option and run until termination
                 option = MarkovOption(
                     starting_state=state,
@@ -335,12 +302,12 @@ class SMDPModelLearning:
                     option.cumulant += γ ** option.k * reward
                     if option.termination_function(state):
                         break
-        
+                
                 # Update option models
                 option_state = (option_i, *option.starting_state)
                 R[option_state] = option.cumulant
                 P[(*option_state, *state)] = γ ** option.k
-
+        
         return N, R, P
 
 

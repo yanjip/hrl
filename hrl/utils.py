@@ -1,17 +1,35 @@
+import _pickle
+import os
+import sys
+from pathlib import Path
 from queue import Queue
 from threading import Thread
-import _pickle
-import sys
-import os
+
 import numpy as np
-from pathlib import Path
+
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def randargmax(array):
-    """ a random tie-breaking argmax for 1 dimensional array"""
-    return np.random.choice(np.flatnonzero(array == array.max()))
-    # return np.argmax(np.random.random(ndarray.shape) * (ndarray == ndarray.max()))
+def randargmax(array, rng: np.random.RandomState = None):
+    """ A random tie-breaking argmax for 1 dimensional array """
+    choices = np.flatnonzero(array == array.max())
+    if rng:
+        return rng.choice(choices)
+    return np.random.choice(choices)
+
+
+class LearningRate:
+    __slots__ = 'rate', 'min', 'decay'
+    
+    def __init__(self, start_rate: float, min_rate: float, decay: float):
+        self.rate = start_rate
+        self.min = min_rate
+        self.decay = decay
+    
+    def update(self, t):
+        """ Updates learning rate """
+        update = self.rate / (1. + self.decay * t)
+        self.rate = max(self.min, update)
 
 
 class DevNull(object):
@@ -59,7 +77,7 @@ def cache(cachedir=os.path.join(ROOT_DIR, 'cache')):
                     f'function {func.__name__} with arguments {args} and kwargs {kwargs} is already cached')
                 with open(filename, 'rb') as f:
                     return _pickle.load(f)
-
+            
             filename.parent.mkdir(parents=True, exist_ok=True)
             result = func(*args, **kwargs)
             with open(filename, 'wb') as f:

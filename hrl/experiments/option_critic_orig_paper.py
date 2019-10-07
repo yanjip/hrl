@@ -6,9 +6,7 @@ import redis
 import random
 from functools import partial
 
-from scipy.special import expit
-from scipy.misc import logsumexp
-import dill
+from scipy.special import expit, logsumexp
 from hrl.utils import randargmax
 
 class Tabular:
