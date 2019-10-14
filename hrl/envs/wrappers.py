@@ -45,6 +45,18 @@ class AgentPosition(gym.core.ObservationWrapper):
         return (env.agent_dir, *reversed(env.agent_pos))
 
 
+class Tabular(gym.core.ObservationWrapper):
+    
+    def __init__(self, env):
+        super().__init__(env)
+        env = self.env.unwrapped
+        self.dim = 4 * env.width * env.height
+        self.observation_space = spaces.Discrete(self.dim)
+    
+    def observation(self, obs):
+        return np.where(obs == 1)[0][0]
+
+
 class OneHotObsWrapper(gym.core.ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)
