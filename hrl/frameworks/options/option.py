@@ -1,56 +1,41 @@
-import numpy as np
+from typing import Callable
 
 
 class Option:
-    # TODO: deprecate and use GVF class instead
     def __init__(self,
-                 termination_set: np.ndarray,
-                 policy: np.ndarray,
-                 initiation_set: np.ndarray = None,
-                 name: str = None):
-        self._initiation_set = initiation_set
-        self._termination_set = termination_set
-        self._policy = policy
-        self.name = name
+                 termination: Callable,
+                 policy: Callable,
+                 initiation: Callable,
+                 id: str = None):
+        self.I = initiation
+        self.β = termination
+        self.π = policy
+        
+        self.id = str(id)
     
-    @property
-    def initiation_set(self):
-        return self._initiation_set
+    def initiation(self, s, *args, **kwargs):
+        return self.I(s, *args, **kwargs)
     
-    @initiation_set.setter
-    def initiation_set(self, Ι: np.ndarray):
-        self._initiation_set = Ι
+    def termination(self, s, *args, **kwargs):
+        return self.β(s, *args, **kwargs)
     
-    @property
-    def termination_function(self):
-        return lambda s: self._termination_set[s]
+    def policy(self, s, *args, **kwargs):
+        return self.π(s, *args, **kwargs)
     
-    @termination_function.setter
-    def termination_function(self, β):
-        self._termination_set = β
-    
-    @property
-    def policy(self):
-        return lambda s: int(self._policy[s])
-    
-    @policy.setter
-    def policy(self, π):
-        self._policy = π
-    
-    def __str__(self):
-        return self.name
+    def __repr__(self):
+        return self.id
 
 
 class MarkovOption:
     
     def __init__(self,
-                 option,
+                 option: Option,
                  k: int = 0,
                  starting_state=None,
-                 cumulant=0,
-                 ):
+                 cumulant=0):
         """ An option object that is currently being executed by the agent
-
+        
+        :param option: an plain option to wrap the trackers around
         :param k: duration of the option so far
         :param starting_state: state in which the option was initiated
         :param cumulant: accumulated signal so far
@@ -66,8 +51,8 @@ class MarkovOption:
         except AttributeError:
             return self.__dict__[name]
     
-    def __str__(self):
-        return getattr(object.__getattribute__(self, 'option'), 'id')
+    def __repr__(self):
+        return self.option
     
     def reset(self):
         self.k = 0
