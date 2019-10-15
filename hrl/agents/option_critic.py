@@ -9,7 +9,7 @@ from hrl.frameworks.options.policies import PolicyOverOptions
 from hrl.models.torch.network_bodies import NatureConvBody
 from hrl.project_logger import ProjectLogger
 from copy import deepcopy
-
+import torch.nn.functional as f
 
 class OptionCriticAgent:
     """  Actor-Critic style agent for learning options in a differentiable way.
@@ -169,6 +169,7 @@ class OptionCriticNetwork:
         
         # Initialize
         s0 = self.env.reset()
+        s0 = f.normalize(s0, dim=(2, 3))
         φ0 = self.feature_generator(s0)
         Q = self.critic(φ0)
         option = self.actor(φ0, action_values=Q)
@@ -177,12 +178,12 @@ class OptionCriticNetwork:
         # Run until episode termination
         done = False
         while not done:
-            print(self.env.step_count)
             π = option.π(φ0)
             dist = torch.distributions.Categorical(probs=π)
             action, entropy = dist.sample(), dist.entropy()
             
             s1, r, done, info = self.env.step(int(action))
+            s1 = f.normalize(s1, dim=(2, 3))
             φ1 = self.feature_generator(s1)
             with torch.no_grad():
                 target_Q = self.target_network(φ1)

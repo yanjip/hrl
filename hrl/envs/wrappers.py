@@ -2,6 +2,7 @@ from enum import IntEnum
 
 import gym
 import numpy as np
+import torch
 from gym import spaces
 from gym_minigrid.wrappers import FlatObsWrapper
 
@@ -147,3 +148,14 @@ class FlatObsWrapperNoMission(FlatObsWrapper):
         obs = np.concatenate((image.flatten(), self.cachedArray.flatten()))
         
         return obs
+
+
+class Torch(gym.core.ObservationWrapper):
+    
+    def observation(self, obs):
+        # return torch.tensor(obs, device=Config.DEVICE, dtype=torch.float32)
+        obs = obs.swapaxes(0, 2)
+        t = torch.tensor(obs, dtype=torch.float32)
+        if len(t.shape) == 3:
+            t = t.unsqueeze(0)
+        return t
