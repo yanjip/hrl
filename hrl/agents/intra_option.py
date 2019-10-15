@@ -1,19 +1,41 @@
 import random
 import time
-from typing import List
+from typing import List, NamedTuple
 
 import numpy as np
+import torch
 from gym_minigrid.minigrid import MiniGridEnv
 
 from hrl.feature_generators.feature_generators import FeatureGenerator
-from hrl.frameworks import GAVF
-from hrl.frameworks.gvf import GVF
+from hrl.frameworks.gvf.gvf import ControlDemon, TabularQ
 from hrl.frameworks.options.option import Option
 from hrl.frameworks.options.policies import PolicyOverOptions
+from hrl.models.torch.network_bodies import FCBody
 from hrl.project_logger import ProjectLogger
 from hrl.utils import LearningRate
 
-Option = List[Option]
+
+class Transition(NamedTuple):
+    s0: np.ndarray  # current state
+    o: Option  # could be a primitive option a well as a learned one
+    r: np.ndarray  # reward (does not have to be scalar)
+    s1: np.ndarray  # next state
+    done: bool  # episode termination indicator
+
+
+class TorchTransition(NamedTuple):
+    s0: np.ndarray  # current state
+    o: Option  # could be a primitive option a well as a learned one
+    r: np.ndarray  # reward (does not have to be scalar)
+    s1: np.ndarray  # next state
+    done: bool  # episode termination indicator
+    φ0: torch.Tensor  # feature vector of the current state
+    φ1: torch.Tensor  # feature vector of the next state
+    r: torch.Tensor  # reward (does not have to be scalar)
+    Q: torch.Tensor  # Q-values for the current state
+    target_Q: torch.Tensor  # Q-values of the next state under target network
+    π: torch.Tensor  # action distribution of option's `o` policy in state `s`
+    β: torch.Tensor  # probability of terminating in the next state under `o`
 
 
 class IntraOptionModelLearning:
@@ -112,7 +134,7 @@ class IntraOptionModelLearning:
         return N, R, P
 
 
-class IntraOptionQLearning(GAVF):
+class IntraOptionQLearning(ControlDemon):
     """
         We turn now to the intra-option learning of option values and thus of optimal policies
         over options. If the options are semi-Markov, then again the SMDP methods described in
@@ -121,19 +143,15 @@ class IntraOptionQLearning(GAVF):
         look inside them, then we can consider intra-option methods. Just as in the case of model
         learning, intra-option methods for value learning are potentially more efficient than SMDP
         methods because they extract more training examples from the same experience.
-
-        Note: the following approach allows for option execution, while learning about the options
-            that are consistent with the primitive actions taken. In the original paper, only primitive
-            actions were taken in order to learn the option values.
     """
     
     def __init__(self,
                  env: MiniGridEnv,
-                 options: List[GVF],
+                 options: List[Option],
                  target_policy: PolicyOverOptions,
                  feature_generator: FeatureGenerator,
-                 lr: LearningRate,
-                 n_features: int = None,
+                 weights,  # TODO: type?
+                 lr: LearningRate = LearningRate(1, 1, 0),
                  gamma: float = 0.9,
                  loglevel: int = 20,
                  ):
@@ -147,7 +165,7 @@ class IntraOptionQLearning(GAVF):
                          cumulant=self.cumulant,
                          feature=feature_generator,
                          behavioural_policy=target_policy,
-                         weights=np.zeros(feature_generator.output_dim),
+                         weights=weights,
                          id=repr(self))
         
         self.options = self.Ω = options
@@ -158,42 +176,38 @@ class IntraOptionQLearning(GAVF):
         
         self.logger = ProjectLogger(level=loglevel, printing=False)
     
-    def _grad(self, s, ω):
-        """ Gradient of a linear FA is the feature vector """
-        return self.feature(s, ω)
+    def advantage(self, state):
+        """ Used as an unbiased estimator with reduced variance. """
+        Q = self.predict(state)
+        return Q - np.dot(self.π.pmf(state, Q), Q)
     
-    def advantage(self, state, option: int):
-        return self.predict(state, option) - np.max(self.option_values(state))
-    
-    def utility(self, state, option: GVF) -> float:
+    def utility(self, state, option: Option) -> float:
         """ Utility of persisting with the same option vs picking another. """
         ω = self.option_idx_dict[str(option)]
-        β = option.γ.pmf(state)
-        Q = self.option_values(state)
-        continuation_value = (1 - β) * self.predict(state, ω)
+        β = option.β.pmf(state)
+        Q = self.predict(state)
+        continuation_value = (1 - β) * Q[ω]
         termination_value = β * np.dot(self.π.pmf(state, Q), Q)
         return continuation_value + termination_value
     
-    def update(self,
-               s0: np.ndarray,
-               r: float,
-               s1: np.ndarray,
-               option: GVF,
-               done: bool):
-        """ Preforms an Intra-Option Q-learning update """
+    def loss(self,
+             s0: np.ndarray,
+             o: Option,
+             r: float,
+             s1: np.ndarray,
+             done: bool):
+        """ Calculates an Intra-Option Q-learning loss """
+        # TODO: rewrite in terms of experience instead
         γ = self.gamma
-        α = self.lr.rate
-        ω = self.option_idx_dict[str(option)]
+        ω = self.option_idx_dict[str(o)]
         
-        δ = r - self.predict(s0, ω)
+        δ = r - self.predict(s0)[ω]
         if not done:
-            δ += γ * self.utility(s1, option)
-        
-        self.w += α * δ * self._grad(s0, ω)
+            δ += γ * self.utility(s1, o)
+        return δ
     
-    def option_values(self, state):
-        # TODO: vectorize this atrocity
-        return np.array([self.predict(state, i) for i, o in enumerate(self.Ω)])
+    def update(self, experience: Transition):
+        raise NotImplementedError
     
     def learn_option_values(self, render: bool = False):
         
@@ -204,7 +218,7 @@ class IntraOptionQLearning(GAVF):
         while not done:
             
             # Step through environment
-            a = executing_option.behavioural_policy(state)
+            a = executing_option.policy(state)
             s_next, reward, done, info = self.env.step(a)
             
             action_name = list(env.actions)[a].name
@@ -221,7 +235,7 @@ class IntraOptionQLearning(GAVF):
             
             # Update option-values for every option consistent with `a`
             for option in self.options:
-                if option.target_policy(state) == a:
+                if option.policy(state) == a:
                     self.update(state, reward, s_next, option, done)
             
             # Terminate the option
@@ -232,6 +246,62 @@ class IntraOptionQLearning(GAVF):
             state = s_next
         
         return self.env.step_count
+
+
+class LinearIntraOptionQLearning(TabularQ, IntraOptionQLearning):
+    
+    # TODO: figure out the tabular case vs linear with aggregation
+    
+    def __init__(self, n_states, n_actions, *args, **kwargs):
+        super().__init__(n_states, n_actions, *args, **kwargs)
+        self.target_w = self.w
+    
+    def update(self, experience: Transition):
+        """ Semi-gradient TD(0) update """
+        α = self.lr.rate
+        δ = self.loss(*experience)
+        ω = self.option_idx_dict[str(experience.o)]
+        if δ:
+            self.w += α * δ * self.feature(s=experience.s0, o=ω)
+
+
+class IntraOptionDeepQLearning(IntraOptionQLearning):
+    
+    def __init__(self,
+                 critic: FCBody,
+                 *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.critic = critic
+        self.advantage_estimator = 'io'
+    
+    def advantage(self, state, Q: torch.Tensor = None):
+        """ Used as an unbiased estimator with reduced variance. """
+        return Q - Q.max()
+        # return Q - torch.matmul(self.π.pmf(state, action_values=Q), Q)
+    
+    def estimate_advantage(self, exp: TorchTransition):
+        ω = self.option_idx_dict[str(exp.o)]
+        if self.advantage_estimator == 'io':
+            # Intra-Option Advantage Estimator
+            Q_prime = self.predict(exp.φ1)[:, ω]
+            advantage = exp.r + self.gamma * (1 - exp.done) * Q_prime - exp.Q[:, ω]
+        else:
+            raise ValueError(f'Unknown estimator {self.advantage_estimator}')
+        return advantage
+    
+    def loss(self, exp: TorchTransition):
+        ω = self.option_idx_dict[str(exp.o)]
+        γ = self.gamma
+        U = (1 - exp.β) * exp.target_Q[:, ω] + exp.β * torch.max(exp.target_Q)
+        # TODO: Huber Loss? .mul(0.5)
+        loss = (exp.r + γ * (1 - exp.done) * U - exp.Q[:, ω]).pow(2)
+        return loss
+    
+    def update(self, experience: Transition):
+        pass  # auto-grad
+    
+    def predict(self, obs, *args, **kwargs) -> np.array:
+        return self.critic(self.feature(obs))
 
 
 class IntraOptionActionLearning(IntraOptionQLearning):
@@ -250,7 +320,7 @@ class IntraOptionActionLearning(IntraOptionQLearning):
                action: int,
                reward: float,
                s_next: np.ndarray,
-               option: GVF,
+               option: Option,
                done: bool):
         """ Preforms an Intra-Option Q-learning update """
         γ = self.gamma
@@ -260,6 +330,6 @@ class IntraOptionActionLearning(IntraOptionQLearning):
         δ = reward - self.weights[ω, action]
         if not done:
             Q = self.Q_omega.predict(s_next)
-            β = option.γ.pmf(s_next)
+            β = option.termination.pmf(s_next)
             δ += γ * ((1 - β) * Q[ω] + β * Q.max())
         self.weights[ω, action] += α * δ
