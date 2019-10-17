@@ -24,10 +24,10 @@ class Transition(NamedTuple):
 
 
 class TorchTransition(NamedTuple):
-    s0: np.ndarray  # current state
+    s0: torch.Tensor  # current state
     o: Option  # could be a primitive option a well as a learned one
-    r: np.ndarray  # reward (does not have to be scalar)
-    s1: np.ndarray  # next state
+    r: torch.Tensor  # reward (does not have to be scalar)
+    s1: torch.Tensor  # next state
     done: bool  # episode termination indicator
     φ0: torch.Tensor  # feature vector of the current state
     φ1: torch.Tensor  # feature vector of the next state
@@ -293,8 +293,7 @@ class IntraOptionDeepQLearning(IntraOptionQLearning):
         ω = self.option_idx_dict[str(exp.o)]
         γ = self.gamma
         U = (1 - exp.β) * exp.target_Q[:, ω] + exp.β * torch.max(exp.target_Q)
-        # TODO: Huber Loss? .mul(0.5)
-        loss = (exp.r + γ * (1 - exp.done) * U - exp.Q[:, ω]).pow(2)
+        loss = (exp.r + γ * (1 - exp.done) * U - exp.Q[:, ω]).pow(2).mul(0.5)
         return loss
     
     def update(self, experience: Transition):

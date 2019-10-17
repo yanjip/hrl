@@ -5,6 +5,7 @@ import itertools
 import numpy as np
 import redis
 import torch
+import gym_minigrid
 from gym_minigrid.wrappers import FullyObsWrapper
 from tqdm import tqdm
 
@@ -51,7 +52,7 @@ def create_options(n: int,
             # termination=SigmoidTerminationTorch(rng, n_features),
             termination=FCBody(n_features, (1,), torch.sigmoid),
             # policy=SoftmaxPolicyTorch(n_features, n_actions),
-            policy=FCBody(n_features, (n_actions,), torch.nn.functional.softmax),
+            policy=FCBody(n_features, (n_actions,), torch.nn.Softmax(dim=1)),
             initiation=lambda x: 1,
             id=str(i)
         )
@@ -115,7 +116,21 @@ if __name__ == '__main__':
     agent = OptionCriticNetwork(env, feature_generator=net, critic=critic,
                                 actor=actor, optimizer=optimizer,
                                 loglevel=loglevel)
-    
+
+    # Generate all possible states
+    states = list()
+    for i in range(env.grid.width):
+        for j in range(env.grid.height):
+            obj = env.grid.get(i, j)
+            if isinstance(obj, gym_minigrid.minigrid.Wall):
+                continue
+            env.place_agent(top=(i, j))
+            for direction in range(4):
+                env.agent_dir = direction
+                states.append((env.observation(
+                    env.env.observation(env.gen_obs())), (direction, i, j)))
+    states_ = torch.cat([s[0] for s in states])
+    grid_dim = (4, env.unwrapped.width, env.unwrapped.height)
     
     class Config(NamedTuple):
         entropy_weight: float = 0.01
@@ -128,18 +143,20 @@ if __name__ == '__main__':
     switch_time = n_episodes // len(tasks)
     np.set_printoptions(precision=3, suppress=True, linewidth=150)
     for t in tqdm(range(n_episodes)):
-        agent.learn(Config())
         
+        q = agent.critic.critic(agent.feature_generator(states_)).t().data.numpy()
+        qs = np.zeros(grid_dim)
+        for option_value in q:
+            for (_, agent_pos), qq in zip(states, option_value):
+                qs[agent_pos] = qq
+        
+        print(np.mean(qs, axis=0))
+
+        agent.learn(Config())
+
         # if t % switch_time == 0:
         #     agent.env.unwrapped._goal_default_pos = tasks.pop(0)
-        #
-        # # Update learning rates
-        # agent.critic.lr.update(t)
-        # for o in agent.actor.options:
-        #     if not isinstance(o.π, PrimitivePolicy):
-        #         o.π.lr.update(t)
-        #         o.β.lr.update(t)
-        #
+
         # # Plot stats
         # grid_dim = (4, env.unwrapped.width, env.unwrapped.height)
         # all_states = list(range(n_states))

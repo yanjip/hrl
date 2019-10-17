@@ -1,15 +1,19 @@
 import time
+from copy import deepcopy
+
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as f
 from gym_minigrid.minigrid import MiniGridEnv
+from matplotlib.lines import Line2D
 
 from hrl.agents.intra_option import IntraOptionQLearning, IntraOptionActionLearning, Transition, TorchTransition, IntraOptionDeepQLearning
 from hrl.frameworks.options import PrimitivePolicy, Option
 from hrl.frameworks.options.policies import PolicyOverOptions
 from hrl.models.torch.network_bodies import NatureConvBody
 from hrl.project_logger import ProjectLogger
-from copy import deepcopy
-import torch.nn.functional as f
+
 
 class OptionCriticAgent:
     """  Actor-Critic style agent for learning options in a differentiable way.
@@ -135,6 +139,7 @@ class OptionCriticNetwork:
     Here the weights for both critic and actor are learned by a single NN
     with multiple heads.
     """
+    
     def __init__(self,
                  env: MiniGridEnv,
                  feature_generator: NatureConvBody,
@@ -158,7 +163,7 @@ class OptionCriticNetwork:
         self.rng = rng
         # TODO: check if the weights of the `network` change
         # self.target_network.load_state_dict(self.network.state_dict())
-        
+    
     def learn(self, config):
         
         # Trackers
@@ -174,56 +179,74 @@ class OptionCriticNetwork:
         Q = self.critic(φ0)
         option = self.actor(φ0, action_values=Q)
         ω = self.actor.option_idx_dict[str(option)]
-
+        
         # Run until episode termination
         done = False
         while not done:
             π = option.π(φ0)
+            # print(π)
             dist = torch.distributions.Categorical(probs=π)
             action, entropy = dist.sample(), dist.entropy()
             
             s1, r, done, info = self.env.step(int(action))
             s1 = f.normalize(s1, dim=(2, 3))
             φ1 = self.feature_generator(s1)
-            with torch.no_grad():
-                target_Q = self.target_network(φ1)
-                β = option.termination(φ1)
+            # with torch.no_grad():
+            target_Q = self.critic(φ1)
+            β = option.β(φ1)
             experience = TorchTransition(s0=s0, o=option, r=r, s1=s1, done=done,
                                          φ0=φ0, φ1=φ1, Q=Q, target_Q=target_Q,
                                          π=π, β=β)
-            q_loss = self.critic.loss(experience)
+            q_loss = self.critic.loss(experience).mean()
             
             critique = self.critic.estimate_advantage(experience)
-            pi_loss = -(torch.log(π)[:, action] * critique.detach()) - config.entropy_weight * entropy
-
+            pi_loss = -(torch.log(π)[:,
+                        action] * critique.detach()) - config.entropy_weight * entropy
+            pi_loss = pi_loss.mean()
             termination_advantage = self.critic.advantage(φ1, Q)[:, ω]
-            beta_loss = β * (termination_advantage.detach() + config.η)
+            beta_loss = (β * (termination_advantage.detach() + config.η) * (
+                    1 - done)).mean()
             
             self.optimizer.zero_grad()
-            (pi_loss + q_loss + beta_loss).backward()
+            # print(pi_loss + q_loss + beta_loss)
+            # print(pi_loss, q_loss, beta_loss, '\n')
+            (pi_loss + q_loss + beta_loss).mean().backward(retain_graph=True)
             torch.nn.utils.clip_grad_norm_(self.feature_generator.parameters(),
                                            config.gradient_clip)
             torch.nn.utils.clip_grad_norm_(self.critic.critic.parameters(),
                                            config.gradient_clip)
             torch.nn.utils.clip_grad_norm_(option.π.parameters(),
                                            config.gradient_clip)
+            torch.nn.utils.clip_grad_norm_(option.β.parameters(),
+                                           config.gradient_clip)
             self.optimizer.step()
             
+            # self.plot_grad_flow(self.feature_generator.named_parameters())
+            # plt.show()
+            # plt.close()
+            # self.plot_grad_flow(self.critic.critic.named_parameters())
+            # plt.show()
+            # plt.close()
+            
             # Choose another option in case the current one terminates
-            Q = self.critic(φ1)
             if β > self.rng.uniform():
                 option = self.actor(φ1, action_values=Q)
                 ω = self.actor.option_idx_dict[str(option)]
                 option_switches += 1
                 avgduration += (1. / option_switches) * (duration - avgduration)
                 duration = 0
-                
+            
             s0 = s1
             φ0 = φ1
+            Q = target_Q
             
-            if self.env.step_count % config.target_network_update_freq == 0:
-                self.target_network.load_state_dict(self.critic.critic.state_dict())
-                
+            if self.env.step_count % 1000 == 0:
+                print(self.env.step_count, self.env)
+            
+            # if self.env.step_count % config.target_network_update_freq == 0:
+            #     self.target_network.load_state_dict(
+            #         self.critic.critic.state_dict())
+            
             cumulant += r
             duration += 1
         
@@ -233,3 +256,35 @@ class OptionCriticNetwork:
                          f'switches {option_switches}\n'
                          f'critic lr {self.critic.lr.rate}\n'
                          f'')
+    
+    def plot_grad_flow(self, named_parameters):
+        '''Plots the gradients flowing through different layers in the net during training.
+        Can be used for checking for possible gradient vanishing / exploding problems.
+
+        Usage: Plug this function in Trainer class after loss.backwards() as
+        "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
+        ave_grads = []
+        max_grads = []
+        layers = []
+        for n, p in named_parameters:
+            if (p.requires_grad) and ("bias" not in n):
+                layers.append(n)
+                ave_grads.append(p.grad.abs().mean())
+                max_grads.append(p.grad.abs().max())
+        plt.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1,
+                color="c")
+        plt.bar(np.arange(len(max_grads)), ave_grads, alpha=0.1, lw=1,
+                color="b")
+        plt.hlines(0, 0, len(ave_grads) + 1, lw=2, color="k")
+        plt.xticks(range(0, len(ave_grads), 1), layers, rotation="vertical")
+        plt.xlim(left=0, right=len(ave_grads))
+        plt.ylim(bottom=-0.001,
+                 top=0.02)  # zoom in on the lower gradient regions
+        plt.xlabel("Layers")
+        plt.ylabel("average gradient")
+        plt.title("Gradient flow")
+        plt.grid(True)
+        plt.legend([Line2D([0], [0], color="c", lw=4),
+                    Line2D([0], [0], color="b", lw=4),
+                    Line2D([0], [0], color="k", lw=4)],
+                   ['max-gradient', 'mean-gradient', 'zero-gradient'])
